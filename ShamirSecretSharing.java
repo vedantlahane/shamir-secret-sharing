@@ -58,9 +58,6 @@ public class ShamirSecretSharing {
         }
 
         BigInteger toBigInt() {
-            if (den.equals(BigInteger.ZERO)) {
-                throw new ArithmeticException("Cannot convert fraction with zero denominator to BigInteger");
-            }
             return num.divide(den);
         }
 
@@ -76,8 +73,7 @@ public class ShamirSecretSharing {
         for (String file : files) {
             try {
                 System.out.println("Processing: " + file);
-                
-                // Check if file exists
+
                 if (!Files.exists(Paths.get(file))) {
                     System.err.println("Error: File '" + file + "' not found");
                     allSuccessful = false;
@@ -88,7 +84,7 @@ public class ShamirSecretSharing {
                 BigInteger secret = extractSecretFromJson(json);
                 System.out.println("Secret: " + secret);
                 System.out.println();
-                
+
             } catch (IOException e) {
                 System.err.println("Error reading file '" + file + "': " + e.getMessage());
                 allSuccessful = false;
@@ -105,178 +101,131 @@ public class ShamirSecretSharing {
     }
 
     static BigInteger extractSecretFromJson(String json) {
-        try {
-            int k = extractK(json);
-            List<Point> points = extractPoints(json);
+        int k = extractK(json);
+        List<Point> points = extractPoints(json);
 
-            if (points.isEmpty()) {
-                throw new RuntimeException("No valid points found in JSON");
-            }
-
-            if (points.size() < k) {
-                throw new RuntimeException("Insufficient points: need " + k + " points, but only found " + points.size());
-            }
-
-            // Sort by x and take first k points
-            points.sort(Comparator.comparing(p -> p.x));
-            return solve(points.subList(0, k));
-            
-        } catch (NumberFormatException e) {
-            throw new RuntimeException("Invalid number format in JSON: " + e.getMessage());
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to extract secret from JSON: " + e.getMessage());
+        if (points.size() < k) {
+            throw new RuntimeException("Insufficient valid points to reconstruct secret");
         }
+
+        Map<BigInteger, Integer> secretFreq = new HashMap<>();
+        List<List<Point>> subsets = generateCombinations(points, k);
+
+        for (List<Point> subset : subsets) {
+            try {
+                BigInteger secret = solve(subset);
+                secretFreq.put(secret, secretFreq.getOrDefault(secret, 0) + 1);
+            } catch (Exception e) {
+                // Skip invalid subset
+            }
+        }
+
+        if (secretFreq.isEmpty()) {
+            throw new RuntimeException("No valid combinations could reconstruct the secret");
+        }
+
+        return Collections.max(secretFreq.entrySet(), Map.Entry.comparingByValue()).getKey();
     }
 
     static int extractK(String json) {
-        try {
-            Pattern kPattern = Pattern.compile("\"k\"\\s*:\\s*(\\d+)");
-            Matcher kMatcher = kPattern.matcher(json);
-            if (kMatcher.find()) {
-                int k = Integer.parseInt(kMatcher.group(1));
-                if (k <= 0) {
-                    throw new RuntimeException("Invalid k value: k must be positive, got " + k);
-                }
-                return k;
-            } else {
-                throw new RuntimeException("Could not find 'k' value in JSON");
-            }
-        } catch (NumberFormatException e) {
-            throw new RuntimeException("Invalid k value format: " + e.getMessage());
+        Pattern kPattern = Pattern.compile("\"k\"\\s*:\\s*(\\d+)");
+        Matcher kMatcher = kPattern.matcher(json);
+        if (kMatcher.find()) {
+            int k = Integer.parseInt(kMatcher.group(1));
+            if (k <= 0) throw new RuntimeException("k must be positive");
+            return k;
         }
+        throw new RuntimeException("Could not find 'k' in JSON");
     }
 
     static List<Point> extractPoints(String json) {
         List<Point> points = new ArrayList<>();
+        Pattern entryPattern = Pattern.compile("\"(\\d+)\"\\s*:\\s*\\{\\s*\"base\"\\s*:\\s*\"(\\d+)\",\\s*\"value\"\\s*:\\s*\"([^\"]+)\"");
+        Matcher matcher = entryPattern.matcher(json);
 
-        try {
-            // Pattern to find entries like: "2": { "base": "10", "value": "123" }
-            Pattern entryPattern = Pattern.compile("\"(\\d+)\"\\s*:\\s*\\{\\s*\"base\"\\s*:\\s*\"(\\d+)\",\\s*\"value\"\\s*:\\s*\"([^\"]+)\"");
-            Matcher matcher = entryPattern.matcher(json);
+        while (matcher.find()) {
+            try {
+                BigInteger x = new BigInteger(matcher.group(1));
+                int base = Integer.parseInt(matcher.group(2));
+                String value = matcher.group(3);
 
-            while (matcher.find()) {
-                try {
-                    BigInteger x = new BigInteger(matcher.group(1));
-                    int base = Integer.parseInt(matcher.group(2));
-                    String value = matcher.group(3);
+                if (base < 2 || base > 36 || value == null || value.trim().isEmpty()) continue;
 
-                    // Validate base
-                    if (base < 2 || base > 36) {
-                        System.err.println("Warning: Skipping point with invalid base " + base + " (must be 2-36)");
-                        continue;
-                    }
-
-                    // Validate and convert value
-                    if (value == null || value.trim().isEmpty()) {
-                        System.err.println("Warning: Skipping point with empty value");
-                        continue;
-                    }
-
-                    BigInteger y = new BigInteger(value.toLowerCase(), base);
-                    points.add(new Point(x, y));
-                    
-                } catch (NumberFormatException e) {
-                    System.err.println("Warning: Skipping invalid point due to number format error: " + e.getMessage());
-                } catch (Exception e) {
-                    System.err.println("Warning: Skipping point due to error: " + e.getMessage());
-                }
+                BigInteger y = new BigInteger(value.toLowerCase(), base);
+                points.add(new Point(x, y));
+            } catch (Exception e) {
+                // Skip invalid point
             }
-
-            return points;
-            
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to extract points from JSON: " + e.getMessage());
         }
+
+        return points;
     }
 
     static BigInteger solve(List<Point> points) {
         int k = points.size();
-        
-        if (k == 0) {
-            throw new RuntimeException("Cannot solve with zero points");
+        Fraction[][] mat = new Fraction[k][k + 1];
+
+        for (int i = 0; i < k; i++) {
+            BigInteger x = points.get(i).x;
+            for (int j = 0; j < k; j++) {
+                mat[i][j] = new Fraction(x.pow(k - j - 1));
+            }
+            mat[i][k] = new Fraction(points.get(i).y);
         }
 
-        try {
-            Fraction[][] mat = new Fraction[k][k + 1];
-
-            // Build augmented matrix
-            for (int i = 0; i < k; i++) {
-                BigInteger x = points.get(i).x;
-                for (int j = 0; j < k; j++) {
-                    try {
-                        mat[i][j] = new Fraction(x.pow(k - j - 1));
-                    } catch (ArithmeticException e) {
-                        throw new RuntimeException("Arithmetic error building matrix at position [" + i + "," + j + "]: " + e.getMessage());
-                    }
+        for (int pivot = 0; pivot < k; pivot++) {
+            int maxRow = pivot;
+            for (int i = pivot + 1; i < k; i++) {
+                if (mat[i][pivot].num.abs().compareTo(mat[maxRow][pivot].num.abs()) > 0) {
+                    maxRow = i;
                 }
-                mat[i][k] = new Fraction(points.get(i).y);
+            }
+            Fraction[] tmp = mat[pivot];
+            mat[pivot] = mat[maxRow];
+            mat[maxRow] = tmp;
+
+            if (mat[pivot][pivot].isZero()) {
+                throw new RuntimeException("Matrix is singular - no unique solution");
             }
 
-            // Gaussian elimination with partial pivoting
-            for (int pivot = 0; pivot < k; pivot++) {
-                
-                // Find best pivot
-                int maxRow = pivot;
-                for (int i = pivot + 1; i < k; i++) {
-                    if (mat[i][pivot].num.abs().compareTo(mat[maxRow][pivot].num.abs()) > 0) {
-                        maxRow = i;
-                    }
-                }
-                
-                // Swap rows
-                if (maxRow != pivot) {
-                    Fraction[] tmp = mat[pivot]; 
-                    mat[pivot] = mat[maxRow]; 
-                    mat[maxRow] = tmp;
-                }
-
-                // Check for singular matrix
-                if (mat[pivot][pivot].isZero()) {
-                    throw new RuntimeException("Matrix is singular - no unique solution exists (pivot " + pivot + " is zero)");
-                }
-
-                // Eliminate below pivot
-                for (int i = pivot + 1; i < k; i++) {
-                    if (!mat[i][pivot].isZero()) {
-                        try {
-                            Fraction factor = mat[i][pivot].divide(mat[pivot][pivot]);
-                            for (int j = pivot; j <= k; j++) {
-                                mat[i][j] = mat[i][j].subtract(factor.multiply(mat[pivot][j]));
-                            }
-                        } catch (ArithmeticException e) {
-                            throw new RuntimeException("Arithmetic error during elimination at row " + i + ", pivot " + pivot + ": " + e.getMessage());
-                        }
+            for (int i = pivot + 1; i < k; i++) {
+                if (!mat[i][pivot].isZero()) {
+                    Fraction factor = mat[i][pivot].divide(mat[pivot][pivot]);
+                    for (int j = pivot; j <= k; j++) {
+                        mat[i][j] = mat[i][j].subtract(factor.multiply(mat[pivot][j]));
                     }
                 }
             }
+        }
 
-            // Back substitution
-            Fraction[] coeff = new Fraction[k];
-            for (int i = k - 1; i >= 0; i--) {
-                try {
-                    coeff[i] = mat[i][k];
-                    for (int j = i + 1; j < k; j++) {
-                        coeff[i] = coeff[i].subtract(mat[i][j].multiply(coeff[j]));
-                    }
-                    
-                    if (mat[i][i].isZero()) {
-                        throw new RuntimeException("Division by zero during back substitution at position " + i);
-                    }
-                    
-                    coeff[i] = coeff[i].divide(mat[i][i]);
-                } catch (ArithmeticException e) {
-                    throw new RuntimeException("Arithmetic error during back substitution at position " + i + ": " + e.getMessage());
-                }
+        Fraction[] coeff = new Fraction[k];
+        for (int i = k - 1; i >= 0; i--) {
+            coeff[i] = mat[i][k];
+            for (int j = i + 1; j < k; j++) {
+                coeff[i] = coeff[i].subtract(mat[i][j].multiply(coeff[j]));
             }
+            coeff[i] = coeff[i].divide(mat[i][i]);
+        }
 
-            // Return constant term (secret)
-            return coeff[k - 1].toBigInt();
-            
-        } catch (Exception e) {
-            if (e instanceof RuntimeException) {
-                throw e;
-            }
-            throw new RuntimeException("Unexpected error during Gaussian elimination: " + e.getMessage());
+        return coeff[k - 1].toBigInt();
+    }
+
+    static List<List<Point>> generateCombinations(List<Point> points, int k) {
+        List<List<Point>> result = new ArrayList<>();
+        backtrack(points, k, 0, new ArrayList<>(), result);
+        return result;
+    }
+
+    static void backtrack(List<Point> points, int k, int start, List<Point> temp, List<List<Point>> result) {
+        if (temp.size() == k) {
+            result.add(new ArrayList<>(temp));
+            return;
+        }
+
+        for (int i = start; i < points.size(); i++) {
+            temp.add(points.get(i));
+            backtrack(points, k, i + 1, temp, result);
+            temp.remove(temp.size() - 1);
         }
     }
 }
