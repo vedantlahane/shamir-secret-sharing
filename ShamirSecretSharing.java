@@ -6,6 +6,7 @@ import java.util.regex.*;
 
 public class ShamirSecretSharing {
 
+    // Class representing a 2D point (x, y) = (share number, share value)
     static class Point {
         BigInteger x, y;
         Point(BigInteger x, BigInteger y) {
@@ -14,9 +15,11 @@ public class ShamirSecretSharing {
         }
     }
 
+    // Class for precise fractional arithmetic with BigInteger support
     static class Fraction {
         BigInteger num, den;
 
+        // Constructor with numerator and denominator, reduces the fraction and ensures consistent sign
         Fraction(BigInteger num, BigInteger den) {
             if (den.equals(BigInteger.ZERO)) {
                 throw new ArithmeticException("Division by zero in fraction");
@@ -30,6 +33,7 @@ public class ShamirSecretSharing {
             }
         }
 
+        // Constructor from an integer (denominator = 1)
         Fraction(BigInteger num) {
             this(num, BigInteger.ONE);
         }
@@ -74,13 +78,17 @@ public class ShamirSecretSharing {
             try {
                 System.out.println("Processing: " + file);
 
+                // Check file existence
                 if (!Files.exists(Paths.get(file))) {
                     System.err.println("Error: File '" + file + "' not found");
                     allSuccessful = false;
                     continue;
                 }
 
+                // Read JSON content
                 String json = Files.readString(Paths.get(file));
+
+                // Reconstruct secret from JSON
                 BigInteger secret = extractSecretFromJson(json);
                 System.out.println("Secret: " + secret);
                 System.out.println();
@@ -100,6 +108,7 @@ public class ShamirSecretSharing {
         }
     }
 
+    // Extract and reconstruct the secret from JSON input
     static BigInteger extractSecretFromJson(String json) {
         int k = extractK(json);
         List<Point> points = extractPoints(json);
@@ -108,6 +117,7 @@ public class ShamirSecretSharing {
             throw new RuntimeException("Insufficient valid points to reconstruct secret");
         }
 
+        // Try all combinations of k points to tolerate invalid shares
         Map<BigInteger, Integer> secretFreq = new HashMap<>();
         List<List<Point>> subsets = generateCombinations(points, k);
 
@@ -116,7 +126,7 @@ public class ShamirSecretSharing {
                 BigInteger secret = solve(subset);
                 secretFreq.put(secret, secretFreq.getOrDefault(secret, 0) + 1);
             } catch (Exception e) {
-                // Skip invalid subset
+                // Skip subsets that result in failure (bad shares)
             }
         }
 
@@ -124,9 +134,11 @@ public class ShamirSecretSharing {
             throw new RuntimeException("No valid combinations could reconstruct the secret");
         }
 
+        // Return the most frequently reconstructed secret (majority vote)
         return Collections.max(secretFreq.entrySet(), Map.Entry.comparingByValue()).getKey();
     }
 
+    // Extract value of k from JSON using regex
     static int extractK(String json) {
         Pattern kPattern = Pattern.compile("\"k\"\\s*:\\s*(\\d+)");
         Matcher kMatcher = kPattern.matcher(json);
@@ -138,6 +150,7 @@ public class ShamirSecretSharing {
         throw new RuntimeException("Could not find 'k' in JSON");
     }
 
+    // Extract all valid points from JSON
     static List<Point> extractPoints(String json) {
         List<Point> points = new ArrayList<>();
         Pattern entryPattern = Pattern.compile("\"(\\d+)\"\\s*:\\s*\\{\\s*\"base\"\\s*:\\s*\"(\\d+)\",\\s*\"value\"\\s*:\\s*\"([^\"]+)\"");
@@ -154,17 +167,19 @@ public class ShamirSecretSharing {
                 BigInteger y = new BigInteger(value.toLowerCase(), base);
                 points.add(new Point(x, y));
             } catch (Exception e) {
-                // Skip invalid point
+                // Skip malformed or invalid points
             }
         }
 
         return points;
     }
 
+    // Reconstruct the secret using Gaussian Elimination
     static BigInteger solve(List<Point> points) {
         int k = points.size();
         Fraction[][] mat = new Fraction[k][k + 1];
 
+        // Build augmented matrix for solving k equations with k unknowns (Lagrange basis coefficients)
         for (int i = 0; i < k; i++) {
             BigInteger x = points.get(i).x;
             for (int j = 0; j < k; j++) {
@@ -173,6 +188,7 @@ public class ShamirSecretSharing {
             mat[i][k] = new Fraction(points.get(i).y);
         }
 
+        // Forward Elimination with partial pivoting
         for (int pivot = 0; pivot < k; pivot++) {
             int maxRow = pivot;
             for (int i = pivot + 1; i < k; i++) {
@@ -198,6 +214,7 @@ public class ShamirSecretSharing {
             }
         }
 
+        // Back substitution to solve for coefficients
         Fraction[] coeff = new Fraction[k];
         for (int i = k - 1; i >= 0; i--) {
             coeff[i] = mat[i][k];
@@ -207,15 +224,18 @@ public class ShamirSecretSharing {
             coeff[i] = coeff[i].divide(mat[i][i]);
         }
 
+        // Constant term of the polynomial (i.e., the secret) is the last coefficient
         return coeff[k - 1].toBigInt();
     }
 
+    // Generate all combinations of k points from the list
     static List<List<Point>> generateCombinations(List<Point> points, int k) {
         List<List<Point>> result = new ArrayList<>();
         backtrack(points, k, 0, new ArrayList<>(), result);
         return result;
     }
 
+    // Backtracking helper to generate combinations
     static void backtrack(List<Point> points, int k, int start, List<Point> temp, List<List<Point>> result) {
         if (temp.size() == k) {
             result.add(new ArrayList<>(temp));
